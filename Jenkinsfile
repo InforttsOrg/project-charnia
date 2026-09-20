@@ -4,6 +4,8 @@
 // Requires credentials: git-github, play-service-account-json, cloudflare-api-token,
 //                       deploy-ssh, ghcr-infortts.
 
+def PLAN = [:]
+
 pipeline {
   agent { label 'mac' }
   options {
@@ -14,7 +16,6 @@ pipeline {
   environment {
     MAX_GRADLE_OPTS = '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m"'
   }
-  def PLAN = [:]
   stages {
     stage('Checkout') {
       steps {
