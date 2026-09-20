@@ -14,6 +14,7 @@ pipeline {
   environment {
     MAX_GRADLE_OPTS = '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m"'
   }
+  def PLAN = [:]
   stages {
     stage('Checkout') {
       steps {
@@ -28,6 +29,7 @@ stage('Version plan') {
             def common = load 'ci/jenkins-common.groovy'
             def planResult = common.plan([appDir: '', track: 'internal',
                                           prefix: 'v-playstore-success-charnia', isFlutter: true])
+            PLAN = planResult
             common.notify("Planning ${env.JOB_NAME}: ${planResult.new_version} → ${planResult.action}")
             if (planResult.action == 'skip') { echo 'nothing to do'; currentBuild.result = 'SUCCESS'; return }
           } catch (Exception e) {
@@ -52,8 +54,11 @@ stage('Flutter: charnia') {
 
           TARGET_DIR="${APP_DIR:-.}"
           if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
-            FOUND=$(find . -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' | head -n 1)
-            [ -n "$FOUND" ] && TARGET_DIR="$(dirname "$FOUND")"
+            TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
+          fi
+          if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+            echo "SKIP: no Flutter app dir found for 'charnia' — skipping"
+            exit 0
           fi
           cd "$TARGET_DIR"
           flutter pub get || true
@@ -76,8 +81,11 @@ stage('Flutter: charnia') {
         sh '''
           TARGET_DIR="${APP_DIR:-.}"
           if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
-            FOUND=$(find . -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' | head -n 1)
-            [ -n "$FOUND" ] && TARGET_DIR="$(dirname "$FOUND")"
+            TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
+          fi
+          if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+            echo "SKIP: no Flutter app dir found for 'charnia' — skipping"
+            exit 0
           fi
           cd "$TARGET_DIR"
           flutter build apk --release || echo "APK build attempted"
@@ -132,6 +140,10 @@ stage('Flutter: charnia') {
 stage('OTA registry: com.infortts.charnia') {
       steps {
         script {
+          if (!PLAN || !PLAN.new_version) {
+            echo "No version plan — skipping OTA bump for com.infortts.charnia"
+            return
+          }
           def common = load 'ci/jenkins-common.groovy'
           def patchFile = sh(script: 'find . -name "*.patch" -o -name "*.bin" -o -name "*.diff" | head -n 1', returnStdout: true)?.trim()
           common.otaBump(PLAN, [
