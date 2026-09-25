@@ -199,12 +199,18 @@ stage('OTA registry: com.infortts.charnia') {
       }
     }
 stage('Tag success') {
+      when {
+        expression { PLAN?.action == 'playstore' }
+      }
       steps {
         script {
+          if (PLAN?.action != 'playstore') {
+            echo "Not a playstore release — skipping success tag"
+            return
+          }
           try {
             def common = load 'ci/jenkins-common.groovy'
-            def planResult = common.plan([appDir: '', track: 'internal', prefix: 'v-playstore-success-charnia'])
-            common.tag('v-playstore-success-charnia', planResult)
+            common.tag('v-playstore-success-charnia', PLAN)
           } catch (Exception e) {
             echo "Tag step notice: ${e.message}"
           }
