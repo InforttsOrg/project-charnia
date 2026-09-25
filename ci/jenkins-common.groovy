@@ -123,29 +123,27 @@ Map plan(Map opts = [:]) {
   def newBase = baseVer
   def nextBuild = buildNo
 
-  if (hasNativeChanges || isMajorBump || isEpochBump || !anchorBase) {
+  if (isEpochBump) {
     action = 'playstore'
-    if (isEpochBump) {
-      EPOCH = EPOCH + 1
-      MAJOR = 0
-      MINOR = 0
-      reason = "Epoch breaking change detected (requires new Play Store binary)"
-    } else if (isMajorBump) {
-      MAJOR = MAJOR + 1
-      MINOR = 0
-      reason = "Major structural change detected (requires new Play Store binary)"
-    } else {
-      MINOR = MINOR + 1
-      reason = "Native / structural change detected in ${appDir} (requires new Play Store binary)"
-    }
+    EPOCH = EPOCH + 1
+    MAJOR = 0
+    MINOR = 0
+    reason = "Epoch breaking change explicitly specified (requires new Play Store binary)"
     newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
-    def calcBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
-    nextBuild = Math.max(buildNo + 1, calcBuild)
+    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
+  } else if (hasNativeChanges || isMajorBump || !anchorBase) {
+    action = 'playstore'
+    MAJOR = MAJOR + 1
+    MINOR = 0
+    reason = "Native / structural change detected in ${appDir} (Major bump: new Play Store binary)"
+    newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
+    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
   } else if (hasLogicChanges) {
     action = 'ota'
-    newBase = anchorBase ?: baseVer
-    nextBuild = buildNo
-    reason = "Dart/logic-only changes parked on Play Store base ${newBase}; OTA patch release"
+    MINOR = MINOR + 1
+    reason = "Dart/logic-only changes (Minor OTA bump on Play Store base ${EPOCH}.${String.format('%02d', MAJOR)})"
+    newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
+    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
   }
 
   def newVersion = "${newBase}+${nextBuild}"
