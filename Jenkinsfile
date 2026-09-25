@@ -23,6 +23,7 @@ pipeline {
         sh 'git submodule update --init --recursive 2>/dev/null || true'
       }
     }
+
 stage('Version plan') {
       steps {
         script {
@@ -42,6 +43,7 @@ stage('Version plan') {
         }
       }
     }
+
 stage('Flutter: charnia') {
       environment {
         APP_DIR = ''
@@ -82,19 +84,28 @@ stage('Flutter: charnia') {
             '''
           }
         }
-        sh '''
-          TARGET_DIR="${APP_DIR:-.}"
-          if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
-            TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
-          fi
-          if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
-            echo "SKIP: no Flutter app dir found for 'charnia' — skipping"
-            exit 0
-          fi
-          cd "$TARGET_DIR"
-          flutter build apk --release || echo "APK build attempted"
-          flutter build appbundle --release || echo "AppBundle build attempted"
-        '''
+        script {
+          def baseVer = PLAN?.base_version ?: ''
+          def buildNum = PLAN?.build_number ?: ''
+          withEnv(["BASE_VER=${baseVer}", "BUILD_NUM=${buildNum}"]) {
+            sh '''
+              TARGET_DIR="${APP_DIR:-.}"
+              if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
+                TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
+              fi
+              if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+                echo "SKIP: no Flutter app dir found for 'charnia' — skipping"
+                exit 0
+              fi
+              cd "$TARGET_DIR"
+              VER_ARGS=""
+              [ -n "$BASE_VER" ] && VER_ARGS="$VER_ARGS --build-name=$BASE_VER"
+              [ -n "$BUILD_NUM" ] && VER_ARGS="$VER_ARGS --build-number=$BUILD_NUM"
+              flutter build apk --release $VER_ARGS || echo "APK build attempted"
+              flutter build appbundle --release $VER_ARGS || echo "AppBundle build attempted"
+            '''
+          }
+        }
         script {
           def common = load 'ci/jenkins-common.groovy'
           
@@ -186,6 +197,7 @@ stage('Tag success') {
         }
       }
     }
+
   }
   post {
     success { script { def c = load 'ci/jenkins-common.groovy'; c.notify("${env.JOB_NAME} OK") } }
