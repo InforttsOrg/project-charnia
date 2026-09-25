@@ -200,9 +200,10 @@ void publishHuggingFace(Map opts = [:]) {
 // OTA registry bump: writes ota-release.json and pushes patch/manifest to Hugging Face CDN
 void otaBump(Map p, Map extra = [:]) {
   echo "OTA bump to ${p.new_version} (base ${p.base_version}, build ${p.build_number})"
+  def publishedAt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX").format(new Date())
   writeFile file: 'ota-release.json', text: groovy.json.JsonOutput.toJson([
     version: p.new_version, base_version: p.base_version, latest_build: p.build_number as int,
-    latest_patch: 0, published_at: new Date().toInstant().toString()])
+    latest_patch: 0, published_at: publishedAt])
   
   if (extra.slug) {
     publishHuggingFace([
