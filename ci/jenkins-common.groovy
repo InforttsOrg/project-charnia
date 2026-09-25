@@ -216,7 +216,7 @@ void otaBump(Map p, Map extra = [:]) {
   }
 }
 
-// Rich Build Summary Card for Jenkins UI (displays all decision points, targets, and health checks)
+// Rich Build Summary for Jenkins UI (displays all decision points, targets, and health checks cleanly)
 void updateBuildSummary(Map p, Map extra = [:]) {
   try {
     def actionLabel = p.action ? p.action.toUpperCase() : 'BUILD'
@@ -225,31 +225,22 @@ void updateBuildSummary(Map p, Map extra = [:]) {
       currentBuild.displayName = "#${env.BUILD_NUMBER} [${actionLabel}] v${versionStr}"
     }
 
-    def badgeColor = actionLabel == 'PLAYSTORE' ? '#22c55e' : (actionLabel == 'OTA' ? '#eab308' : (actionLabel == 'SKIP' ? '#64748b' : '#38bdf8'))
     def androidStatus = extra.android ?: (p.action == 'playstore' ? '✅ Native .aab (Google Play internal track)' : (p.action == 'ota' ? '📦 OTA Differential Patch (HF CDN)' : (p.action == 'skip' ? '⏭️ Skipped (no native change)' : 'N/A')))
     def webStatus = extra.web ?: 'N/A'
     def backendStatus = extra.backend ?: (extra.deploy_host ? "${extra.deploy_host}" : 'None')
     def healthStatus = extra.health ?: (extra.deploy_host ? 'Pending execution' : 'N/A')
-    def envDetails = extra.env ?: "Node: ${env.NODE_NAME ?: 'mac/vps'} | JDK: 17 | Dart/Flutter: 3.47.0"
+    def envDetails = extra.env ?: "Node: ${env.NODE_NAME ?: 'mac/vps'} | JDK: 17 | Flutter: 3.47.0"
 
-    def html = """
-<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; line-height: 1.5; padding: 12px 16px; background: #0b1120; color: #f8fafc; border-radius: 8px; border: 1px solid #1e293b; margin: 8px 0; max-width: 680px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);">
-  <div style="font-weight: 700; font-size: 14px; color: #38bdf8; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
-    <span>🚀 Infortts CI/CD Decision Matrix: ${env.JOB_NAME} #${env.BUILD_NUMBER}</span>
-    <span style="background: ${badgeColor}; color: #000; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">${actionLabel}</span>
-  </div>
-  <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-    <tr><td style="padding: 4px 0; font-weight: 600; width: 140px; color: #94a3b8;">Decision / Action:</td><td style="color: ${badgeColor}; font-weight: bold;">${actionLabel} — ${p.reason ?: 'Standard build'}</td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Version Planning:</td><td style="font-family: monospace; color: #f1f5f9; font-weight: 700;">${p.new_version ?: 'N/A'} <span style="font-weight: normal; color: #94a3b8;">(Base: ${p.base_version ?: 'N/A'}, Build: ${p.build_number ?: 'N/A'})</span></td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Android Target:</td><td style="color: #e2e8f0;">${androidStatus}</td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Web / Cloudflare:</td><td style="color: #e2e8f0;">${webStatus}</td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Backend Server:</td><td style="color: #e2e8f0;">${backendStatus}</td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Healthcheck:</td><td style="color: #e2e8f0;">${healthStatus}</td></tr>
-    <tr><td style="padding: 4px 0; font-weight: 600; color: #94a3b8;">Environment:</td><td style="color: #64748b; font-size: 11px;">${envDetails}</td></tr>
-  </table>
-</div>
-"""
-    currentBuild.description = html
+    def summary = """🚀 Infortts CI/CD Decision Matrix: ${env.JOB_NAME} #${env.BUILD_NUMBER} [${actionLabel}]
+• Action: ${actionLabel} — ${p.reason ?: 'Standard build'}
+• Version Planning: ${p.new_version ?: 'N/A'} (Base: ${p.base_version ?: 'N/A'}, Build: ${p.build_number ?: 'N/A'})
+• Android Target: ${androidStatus}
+• Web / Cloudflare: ${webStatus}
+• Backend Server: ${backendStatus}
+• Healthcheck: ${healthStatus}
+• Environment: ${envDetails}"""
+
+    currentBuild.description = summary
   } catch (Exception e) {
     echo "Notice: Could not set build summary card: ${e.message}"
   }
