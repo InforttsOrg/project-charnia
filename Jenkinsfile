@@ -135,40 +135,36 @@ stage('Flutter: charnia') {
           // Optional Play Store Track Upload — canonical lane reads PACKAGE/TRACK/PLAY_SA_JSON envs
           if (env.PACKAGE == '') {
             echo "no Play package for charnia — build-only complete"
+            PLAN.apk_uploaded = (apkFile != null && !apkFile.isEmpty())
+            PLAN.playstore_uploaded = false
             common.updateBuildSummary(PLAN ?: [action: 'build', new_version: '1.0.0'], [
               android: '✅ Build APK + HF CDN (No Play Package configured)',
               health: '🟢 Local Build & HF CDN Artifact Upload Succeeded'
             ])
           } else {
-            try {
-              withCredentials([[$class: 'FileBinding', credentialsId: 'play-service-account-json', variable: 'PLAY_SA_JSON']]) {
-                sh '''
-                  TARGET_DIR="${APP_DIR:-.}"
-                  if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
-                    FOUND=$(find . -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' | head -n 1)
-                    [ -n "$FOUND" ] && TARGET_DIR="$(dirname "$FOUND")"
-                  fi
-                  if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
-                    echo "SKIP: no Flutter app dir for charnia — Play upload skipped"
-                    exit 0
-                  fi
-                  if [ ! -f "$TARGET_DIR/fastlane/Fastfile" ]; then
-                    echo "SKIP: no fastlane/Fastfile in $TARGET_DIR — Play upload not configured for charnia"
-                    exit 0
-                  fi
-                  cd "$TARGET_DIR"
-                  fastlane internal
-                '''
-                common.updateBuildSummary(PLAN ?: [action: 'playstore', new_version: '1.0.0'], [
-                  android: "✅ Google Play Internal Track (${env.PACKAGE}) + HF CDN APK",
-                  health: "🟢 Fastlane Internal Track Upload Succeeded"
-                ])
-              }
-            } catch (Exception e) {
-              echo "Play upload step notice: ${e.message}"
+            withCredentials([[$class: 'FileBinding', credentialsId: 'play-service-account-json', variable: 'PLAY_SA_JSON']]) {
+              sh '''
+                TARGET_DIR="${APP_DIR:-.}"
+                if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
+                  FOUND=$(find . -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' | head -n 1)
+                  [ -n "$FOUND" ] && TARGET_DIR="$(dirname "$FOUND")"
+                fi
+                if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+                  echo "ERROR: no Flutter app dir for charnia — Play upload cannot proceed"
+                  exit 1
+                fi
+                if [ ! -f "$TARGET_DIR/fastlane/Fastfile" ]; then
+                  echo "ERROR: no fastlane/Fastfile in $TARGET_DIR — Play upload not configured for charnia"
+                  exit 1
+                fi
+                cd "$TARGET_DIR"
+                fastlane internal
+              '''
+              PLAN.playstore_uploaded = true
+              PLAN.apk_uploaded = (apkFile != null && !apkFile.isEmpty())
               common.updateBuildSummary(PLAN ?: [action: 'playstore', new_version: '1.0.0'], [
-                android: "⚠️ Play Store Upload Warning: ${e.message}",
-                health: "⚠️ Fastlane Notice: ${e.message}"
+                android: "✅ Google Play Internal Track (${env.PACKAGE}) + HF CDN APK",
+                health: "🟢 Fastlane Internal Track Upload Succeeded"
               ])
             }
           }
@@ -200,7 +196,10 @@ stage('OTA registry: com.infortts.charnia') {
     }
 stage('Tag success') {
       when {
-        expression { PLAN?.action == 'playstore' }
+        expression {
+          PLAN?.action == 'playstore' &&
+          (env.PACKAGE == '' ? PLAN?.apk_uploaded == true : (PLAN?.playstore_uploaded == true && PLAN?.apk_uploaded == true))
+        }
       }
       steps {
         script {
@@ -208,12 +207,14 @@ stage('Tag success') {
             echo "Not a playstore release — skipping success tag"
             return
           }
-          try {
-            def common = load 'ci/jenkins-common.groovy'
-            common.tag('v-playstore-success-charnia', PLAN)
-          } catch (Exception e) {
-            echo "Tag step notice: ${e.message}"
+          if (env.PACKAGE != '' && !PLAN?.playstore_uploaded) {
+            error("Cannot tag success: Google Play Store upload did not complete successfully.")
           }
+          if (!PLAN?.apk_uploaded) {
+            error("Cannot tag success: Release APK was not produced or uploaded.")
+          }
+          def common = load 'ci/jenkins-common.groovy'
+          common.tag('v-playstore-success-charnia', PLAN)
         }
       }
     }

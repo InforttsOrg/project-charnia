@@ -18,7 +18,10 @@ Map plan(Map opts = [:]) {
   def prefix      = opts.prefix ?: 'v-playstore-success-mitochondria'
   def isFlutter   = opts.isFlutter ?: appDir != ''
 
-  // 1) Read version from pubspec.yaml or .version
+  // 1) Sync & prune tags from origin to prevent stale agent caches
+  _sh("git fetch --tags --prune --force origin 2>/dev/null || true")
+
+  // 1b) Read version from pubspec.yaml or .version
   def fileVer = ""
   def fileBuild = 0
   if (appDir && fileExists("${appDir}/pubspec.yaml")) {
