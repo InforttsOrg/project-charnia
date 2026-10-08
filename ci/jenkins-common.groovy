@@ -16,10 +16,23 @@ Map plan(Map opts = [:]) {
   def appDir      = opts.appDir ?: ''
   def track       = opts.track ?: env.TRACK ?: 'internal'
   def prefix      = opts.prefix ?: 'v-playstore-success-mitochondria'
-  def isFlutter   = opts.isFlutter ?: appDir != ''
+  def isFlutter   = opts.isFlutter != null ? opts.isFlutter : (appDir != '')
 
-  // 1) Sync & prune tags from origin to prevent stale agent caches
+  // 1) Sync & prune tags from origin to ensure freshest tag cache
   _sh("git fetch --tags --prune --force origin 2>/dev/null || true")
+
+  // Helper: parse semantic version tuple [epoch, major, minor]
+  def parseSemver = { String v ->
+    if (!v) return [0, 0, 0]
+    def clean = (v - 'v').trim()
+    if (clean.contains('+')) clean = clean.tokenize('+')[0]
+    if (clean.contains('-')) clean = clean.tokenize('-')[0]
+    def parts = clean.tokenize('.')
+    int e = parts.size() > 0 ? (parts[0] as int) : 0
+    int ma = parts.size() > 1 ? (parts[1] as int) : 0
+    int mi = parts.size() > 2 ? (parts[2] as int) : 0
+    return [e, ma, mi]
+  }
 
   // 1b) Read version from pubspec.yaml or .version
   def fileVer = ""
@@ -40,7 +53,7 @@ Map plan(Map opts = [:]) {
     fileVer = readFile('.version').trim()
   }
 
-  // 2) Most recent successful Play Store release for this track (the "anchor")
+  // 2) Most recent successful Play Store release for this track (the anchor)
   def anchorBase = ""
   def anchorTag = _sh("git tag --list '${prefix}-${track}-*' --sort=-v:refname | head -n 1", true)
   if (anchorTag) {
@@ -52,38 +65,48 @@ Map plan(Map opts = [:]) {
   echo "anchor(${track})=${anchorBase} (tag ${anchorTag})"
 
   // 3) Latest published version from remote tags or pubspec
-  def tags = _sh('git tag --list "*+[0-9]*" | sort -V | tail -n 1', true)
-  def baseVer = anchorBase ?: (fileVer ?: "2.03.00"); def buildNo = fileBuild; int EPOCH=2, MAJOR=3, MINOR=0
+  def tags = _sh('git tag --list "v[0-9]*" "*+[0-9]*" | grep -E "^v?[0-9]+\\.[0-9]+" | sort -V | tail -n 1', true)
+  def tagBase = ""
+  def tagBuild = 0
   if (tags) {
     def v = (tags - 'v').tokenize('+')
-    def tagBase = v[0]
-    def tagBuild = (v.size() > 1 ? v[1] as int : 0)
-    if (tagBase != "0.0.0" && tagBase != "") {
-      baseVer = tagBase
-      buildNo = Math.max(buildNo, tagBuild)
+    tagBase = v[0]
+    tagBuild = (v.size() > 1 ? (v[1] as int) : 0)
+  }
+
+  // Find highest baseline semver between anchor, tags, and local file version
+  def currentSemver = [2, 0, 0]
+  for (String cand : [anchorBase, fileVer, tagBase]) {
+    if (cand) {
+      def p = parseSemver(cand)
+      if (p[0] > currentSemver[0] ||
+          (p[0] == currentSemver[0] && p[1] > currentSemver[1]) ||
+          (p[0] == currentSemver[0] && p[1] == currentSemver[1] && p[2] > currentSemver[2])) {
+        currentSemver = p
+      }
     }
   }
-  if (baseVer && baseVer != "0.0.0") {
-    def p = baseVer.tokenize('.')
-    EPOCH = p[0] as int
-    MAJOR = p.size() > 1 ? p[1] as int : 0
-    MINOR = p.size() > 2 ? p[2] as int : 0
-  }
+
+  int EPOCH = currentSemver[0]
+  int MAJOR = currentSemver[1]
+  int MINOR = currentSemver[2]
+  int buildNo = Math.max(fileBuild, tagBuild)
   if (buildNo == 0) {
     buildNo = EPOCH * 10000 + MAJOR * 100 + MINOR
   }
-  echo "version source: base=${baseVer} build=${buildNo} (pubspec=${fileVer}+${fileBuild}, tag=${tags})"
+  def baseVer = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
+  echo "version source: base=${baseVer} build=${buildNo} (pubspec=${fileVer}+${fileBuild}, tag=${tags}, anchor=${anchorTag})"
 
-  // 4) Change classification vs anchor tag (or latest tag if no anchor)
-  def cmpTag = anchorTag ?: tags
+  // 4) Change classification vs latest tag or anchor tag
+  def cmpTag = tags ?: anchorTag
   def hasNativeChanges = false
   def hasLogicChanges = false
   def isMajorBump = false
   def isEpochBump = false
 
   if (cmpTag) {
-    def changedFiles = _sh("git diff --name-only '${cmpTag}'..HEAD", true)
-    def commitMsgs = _sh("git log '${cmpTag}'..HEAD --oneline", true)
+    def changedFiles = _sh("git diff --name-only '${cmpTag}'..HEAD 2>/dev/null || true", true)
+    def commitMsgs = _sh("git log '${cmpTag}'..HEAD --oneline 2>/dev/null || true", true)
 
     if (commitMsgs =~ /(?i)(BREAKING CHANGE|epoch:)/) {
       isEpochBump = true
@@ -99,57 +122,70 @@ Map plan(Map opts = [:]) {
       // Native changes: android, ios, macos, linux, windows, c++ backend, gradle, native plugins
       if (f =~ /(^|\/)(android|ios|macos|linux|windows|cpp|native|backend)\// ||
           f.endsWith('.gradle') || f.endsWith('.gradle.kts') || f.endsWith('.properties') ||
-          f.endsWith('AndroidManifest.xml') || f.endsWith('Info.plist')) {
+          f.endsWith('AndroidManifest.xml') || f.endsWith('Info.plist') || f.endsWith('Podfile')) {
         hasNativeChanges = true
       } else if (f.endsWith('pubspec.yaml')) {
-        // Check if dependencies were modified
         def depDiff = _sh("git diff '${cmpTag}'..HEAD -- '${f}' | grep -E '^\\+[ ]*(dependencies|dev_dependencies|[a-zA-Z0-9_-]+:)' | grep -vE 'version:' || true", true)
         if (depDiff) {
           hasNativeChanges = true
         }
-      } else if (f =~ /(^|\/)(lib|assets|fonts|web)\// || f.endsWith('.dart')) {
-        hasLogicChanges = true
       } else {
-        if (appDir && f.startsWith(appDir)) {
-          hasLogicChanges = true
-        }
+        // Any other code, bot, script, cloudflare, docker, or config change is a logic change
+        hasLogicChanges = true
       }
     }
   } else {
-    // Fresh repo or no previous tags -> initial Play Store release
+    // Fresh repo or no previous tags -> initial release
     hasNativeChanges = true
   }
 
-  // 5) Decide Action & Calculate Version
-  def action = 'skip'
-  def reason = 'No code changes detected'
-  def newBase = baseVer
-  def nextBuild = buildNo
+  // 5) Decide Action & Calculate Version (Strictly monotonic bump on each trigger)
+  def action = isFlutter ? 'ota' : 'deploy'
+  def reason = 'Trigger version bump'
+  def newBase = ""
+  def nextBuild = buildNo + 1
 
   if (isEpochBump) {
-    action = 'playstore'
+    action = isFlutter ? 'playstore' : 'deploy'
     EPOCH = EPOCH + 1
     MAJOR = 0
     MINOR = 0
-    reason = "Epoch breaking change explicitly specified (requires new Play Store binary)"
-    newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
-    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
+    reason = "Epoch breaking change (new major generation)"
   } else if (hasNativeChanges || isMajorBump || !anchorBase) {
-    action = 'playstore'
+    action = isFlutter ? 'playstore' : 'deploy'
     MAJOR = MAJOR + 1
     MINOR = 0
-    reason = "Native / structural change detected in ${appDir} (Major bump: new Play Store binary)"
-    newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
-    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
-  } else if (hasLogicChanges) {
-    action = 'ota'
+    reason = "Native / structural change detected (Major bump)"
+  } else {
+    // Logic changes or incremental trigger release: increment MINOR
     MINOR = MINOR + 1
-    reason = "Dart/logic-only changes (Minor OTA bump on Play Store base ${EPOCH}.${String.format('%02d', MAJOR)})"
-    newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
-    nextBuild = EPOCH * 10000 + MAJOR * 100 + MINOR
+    reason = hasLogicChanges ? "Code / logic updates detected" : "Incremental trigger release"
   }
 
+  newBase = "${EPOCH}.${String.format('%02d', MAJOR)}.${String.format('%02d', MINOR)}"
+  nextBuild = Math.max(nextBuild, EPOCH * 10000 + MAJOR * 100 + MINOR)
   def newVersion = "${newBase}+${nextBuild}"
+
+  // Automatically stamp pubspec.yaml and .version in workspace
+  if (appDir && fileExists("${appDir}/pubspec.yaml")) {
+    try {
+      def content = readFile("${appDir}/pubspec.yaml")
+      def updated = content.replaceAll(/(?m)^version:\s*.+$/, "version: ${newVersion}")
+      writeFile file: "${appDir}/pubspec.yaml", text: updated
+      echo "Stamped ${appDir}/pubspec.yaml with version: ${newVersion}"
+    } catch (Exception e) {
+      echo "pubspec stamp notice: ${e.message}"
+    }
+  }
+  if (fileExists('.version')) {
+    try {
+      writeFile file: '.version', text: "${newBase}\n"
+      echo "Stamped .version with: ${newBase}"
+    } catch (Exception e) {
+      echo ".version stamp notice: ${e.message}"
+    }
+  }
+
   echo "    PLAN: version=${newVersion} base=${newBase} build=${nextBuild}"
   echo "    ACTION: ${action} — ${reason}"
 
@@ -159,12 +195,27 @@ Map plan(Map opts = [:]) {
   ]
 }
 
-// Tag the repo with success markers (same family as v-playstore-success-{app}-{track}-{base}).
+// Tag the repo with release and anchor markers, pushing directly to origin
 void tag(String kind, Map p, String tokenUser='', String tokenPass='') {
-  def tagName = "${kind}-${p.track}-${p.base_version}"
+  if (!p || !p.new_version) {
+    echo "Warning: No version in plan to tag."
+    return
+  }
   def verTag = "v${p.new_version}"
-  _sh("git tag -f '${tagName}' && git tag -f '${verTag}' && git push origin '${tagName}' '${verTag}' --force")
-  echo "tagged ${tagName} and ${verTag}"
+  _sh("git tag -f '${verTag}'")
+  if (p.action == 'playstore' && kind) {
+    def anchorName = "${kind}-${p.track ?: 'internal'}-${p.base_version}"
+    _sh("git tag -f '${anchorName}'")
+    _sh("git push origin '${anchorName}' --force || true")
+    echo "Tagged Play Store anchor: ${anchorName}"
+  } else if (kind) {
+    def otaTagName = "${kind}-ota-${p.track ?: 'internal'}-${p.base_version}"
+    _sh("git tag -f '${otaTagName}'")
+    _sh("git push origin '${otaTagName}' --force || true")
+    echo "Tagged OTA anchor: ${otaTagName}"
+  }
+  _sh("git push origin '${verTag}' --force")
+  echo "Successfully tagged and pushed ${verTag} to origin"
 }
 
 // Telegram/console notify shim.
@@ -232,14 +283,50 @@ void updateBuildSummary(Map p, Map extra = [:]) {
     def healthStatus = extra.health ?: (extra.deploy_host ? 'Pending execution' : 'N/A')
     def envDetails = extra.env ?: "Node: ${env.NODE_NAME ?: 'mac/vps'} | JDK: 17 | Flutter: 3.47.0"
 
-    def summary = """🚀 Infortts CI/CD Decision Matrix: ${env.JOB_NAME} #${env.BUILD_NUMBER} [${actionLabel}]
-• Action: ${actionLabel} — ${p.reason ?: 'Standard build'}
-• Version Planning: ${p.new_version ?: 'N/A'} (Base: ${p.base_version ?: 'N/A'}, Build: ${p.build_number ?: 'N/A'})
-• Android Target: ${androidStatus}
-• Web / Cloudflare: ${webStatus}
-• Backend Server: ${backendStatus}
-• Healthcheck: ${healthStatus}
-• Environment: ${envDetails}"""
+    def summary = """<div style="background:#0f172a; border:1.5px solid #38bdf8; border-radius:10px; padding:16px; margin:10px 0; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
+  <div style="margin-bottom:12px; border-bottom:1px solid #334155; padding-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+    <span style="font-size:15px; font-weight:bold; color:#38bdf8;">🚀 Infortts CI/CD Decision Matrix: ${env.JOB_NAME} #${env.BUILD_NUMBER} [${actionLabel}]</span>
+    <a href="pipeline-graph-view/" style="display:inline-block; margin-left:12px; background:#0284c7; color:#ffffff; padding:6px 14px; border-radius:6px; font-weight:bold; text-decoration:none; font-size:12px; border:1px solid #38bdf8;">📊 View Pipeline Graph Overview</a>
+  </div>
+  <table style="width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; color:#e2e8f0; text-align:left;">
+    <thead>
+      <tr style="background:#1e293b; border-bottom:2px solid #38bdf8;">
+        <th style="padding:8px 12px; font-weight:600; color:#38bdf8; width:28%;">Decision Parameter</th>
+        <th style="padding:8px 12px; font-weight:600; color:#38bdf8;">Evaluated Value / Resolution</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #334155;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Action</td>
+        <td style="padding:8px 12px;"><span style="background:#0369a1; color:#ffffff; padding:2px 8px; border-radius:4px; font-weight:bold;">${actionLabel}</span> <span style="color:#cbd5e1; margin-left:6px;">${p.reason ?: 'Standard build'}</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #334155; background:#0b1120;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Version Planning</td>
+        <td style="padding:8px 12px;"><code style="background:#1e293b; color:#38bdf8; padding:2px 6px; border-radius:4px; font-family:monospace;">${p.new_version ?: 'N/A'}</code> <span style="color:#94a3b8; font-size:12px; margin-left:6px;">(Base: ${p.base_version ?: 'N/A'}, Build: ${p.build_number ?: 'N/A'})</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #334155;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Android Target</td>
+        <td style="padding:8px 12px;">${androidStatus}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #334155; background:#0b1120;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Web / Cloudflare</td>
+        <td style="padding:8px 12px;">${webStatus}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #334155;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Backend Target</td>
+        <td style="padding:8px 12px;">${backendStatus}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #334155; background:#0b1120;">
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Health Verification</td>
+        <td style="padding:8px 12px;">${healthStatus}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px; font-weight:bold; color:#94a3b8;">Execution Environment</td>
+        <td style="padding:8px 12px; font-size:12px; color:#cbd5e1;">${envDetails}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>"""
 
     currentBuild.description = summary
   } catch (Exception e) {

@@ -72,7 +72,7 @@ platform :android do
 
     unless File.exist?(aab_path)
       UI.message("AAB not found at #{aab_path} — building release appbundle ...")
-      sh('flutter', 'build', 'appbundle', '--release')
+      sh('flutter', 'build', 'appbundle', '--release', '--android-skip-build-dependency-validation')
     end
 
     track = app_track

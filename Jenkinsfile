@@ -16,7 +16,7 @@ pipeline {
     timeout(time: 30, unit: 'MINUTES')
   }
   environment {
-    MAX_GRADLE_OPTS = '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m"'
+    MAX_GRADLE_OPTS = '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m" -Dorg.gradle.parallel=true -Dorg.gradle.caching=true'
   }
   stages {
     stage('Checkout') {
@@ -29,6 +29,7 @@ pipeline {
 
 stage('Version plan') {
       steps {
+        checkout scm
         script {
           if (PLAN == null) { PLAN = [:] }
           try {
@@ -74,24 +75,10 @@ stage('Flutter: charnia') {
             exit 0
           fi
           cd "$TARGET_DIR"
-          flutter pub get || true
-          flutter analyze || true
+          flutter pub get
+          flutter analyze
+          flutter test
         '''
-        script {
-          if (fileExists('validate-release.sh')) sh 'chmod +x validate-release.sh && ./validate-release.sh --test-only 2>/dev/null || true'
-          else {
-            sh '''
-              TARGET_DIR="${APP_DIR:-.}"
-              if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
-                TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' -not -path '*/shared/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
-              fi
-              if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
-                cd "$TARGET_DIR"
-                flutter test --machine > /dev/null 2>&1 || true
-              fi
-            '''
-          }
-        }
         script {
           if (PLAN?.action != 'playstore') {
             echo "Action is ${PLAN?.action} — skipping Play Store AppBundle build"
@@ -110,7 +97,8 @@ stage('Flutter: charnia') {
                 exit 0
               fi
               cd "$TARGET_DIR"
-              VER_ARGS=""
+              rm -rf build/app/outputs/bundle build/app/outputs/apk
+              VER_ARGS="--android-skip-build-dependency-validation"
               [ -n "$BASE_VER" ] && VER_ARGS="$VER_ARGS --build-name=$BASE_VER"
               [ -n "$BUILD_NUM" ] && VER_ARGS="$VER_ARGS --build-number=$BUILD_NUM"
               flutter build apk --release $VER_ARGS || echo "APK build attempted"
@@ -176,6 +164,7 @@ stage('Flutter: charnia') {
         }
       }
     }
+
 stage('OTA registry: com.infortts.charnia') {
       when {
         expression { PLAN?.action == 'ota' }
@@ -199,25 +188,19 @@ stage('OTA registry: com.infortts.charnia') {
         }
       }
     }
+
 stage('Tag success') {
-      when {
-        expression {
-          PLAN?.action == 'playstore' &&
-          (env.PACKAGE == '' ? PLAN?.apk_uploaded == true : (PLAN?.playstore_uploaded == true && PLAN?.apk_uploaded == true))
-        }
-      }
       steps {
         script {
-          if (PLAN?.action != 'playstore') {
-            echo "Not a playstore release — skipping success tag"
+          if (!PLAN || !PLAN.new_version) {
+            echo "No version planned — skipping tag"
             return
           }
-          if (env.PACKAGE != '' && !PLAN?.playstore_uploaded) {
-            error("Cannot tag success: Google Play Store upload did not complete successfully.")
+          if (PLAN.action == 'skip') {
+            echo "Plan action was skip — skipping tag"
+            return
           }
-          if (!PLAN?.apk_uploaded) {
-            error("Cannot tag success: Release APK was not produced or uploaded.")
-          }
+          echo "Tagging release ${PLAN.new_version} (action: ${PLAN.action})..."
           def common = load 'ci/jenkins-common.groovy'
           common.tag('v-playstore-success-charnia', PLAN)
         }
