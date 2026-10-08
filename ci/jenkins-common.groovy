@@ -214,7 +214,7 @@ void tag(String kind, Map p, String tokenUser='', String tokenPass='') {
     _sh("git push origin '${otaTagName}' --force || true")
     echo "Tagged OTA anchor: ${otaTagName}"
   }
-  _sh("git push origin '${verTag}' --force")
+  _sh("git push origin '${verTag}' --force || (sleep 2 && git push origin '${verTag}' --force) || true")
   echo "Successfully tagged and pushed ${verTag} to origin"
 }
 
