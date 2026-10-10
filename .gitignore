@@ -1,0 +1,15 @@
+# Secrets / local credentials
+.env
+.env.*
+!.env.example
+
+# python / tooling caches
+__pycache__/
+*.pyc
+*.iml
+
+# OTA release metadata emitted by the Jenkins plan
+ota-release.json
+
+# local tool / fastlane output
+**/fastlane/report.xml

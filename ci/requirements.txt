@@ -1,0 +1,8 @@
+# Runtime dependencies for the release publisher (ci/upload_to_hf.py).
+# Installed on demand at first publish, and by
+# `python3 -m pip install -r ci/requirements.txt` (inside a venv on PEP 668 hosts).
+# Range, not a hard pin: the uploader only uses the long-stable HfApi/create_repo/upload_file
+# surface, while a hard pin would either downgrade the copy other repos already share on
+# this node or block the publisher after the next major. The range matches the 1.x line
+# already installed fleet-wide and refuses an untested 2.x.
+huggingface_hub>=0.23,<2.0
