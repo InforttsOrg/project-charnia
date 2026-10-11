@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The Infortts shell polls the HF CDN for OTA patches at runtime (shared
+         InforttsCdnOtaEngine / InforttsDirectOtaEngine); without INTERNET the
+         release build silently loses all OTA + network functionality. The debug
+         and profile manifests only cover dev builds. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="charnia"
         android:name="${applicationName}"

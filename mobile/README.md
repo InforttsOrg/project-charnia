@@ -1,17 +1,27 @@
-# charnia
+# Charnia mobile
 
-A new Flutter project.
+Flutter client for **Charnia — Infortts Corporate Registry & Swarm Governance**.
 
-## Getting Started
+The UI is composed from the shared `infortts_shared` package (`InforttsAppShell`,
+`InforttsNodeWorkspace`, `AcousticTheme`) plus this app's generated design skin in
+`lib/design_skin.dart` (generated — do not edit by hand).
 
-This project is a starting point for a Flutter application.
+## Layout
 
-A few resources to get you started if this is your first Flutter project:
+- `lib/main.dart` — app entry point (boots the design skin, mounts the shell).
+- `lib/design_skin.dart` — generated per-app theme; regenerate via the design pipeline.
+- `test/widget_test.dart` — widget smoke test (dashboard/settings shell).
+- `android/` — Android host project; requires `local.properties` (flutter.sdk) and,
+  for release signing, `android/key.properties` (both untracked).
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Build & test
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```sh
+flutter pub get          # resolves infortts_shared via path: ../../shared
+flutter analyze
+flutter test
+flutter build apk --release
+```
+
+Release/CI validation is gated by the repo-root `./validate-release.sh`; the
+Jenkins pipeline owns versioning and CDN publishing. See the top-level `README.md`.

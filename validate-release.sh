@@ -168,6 +168,23 @@ else
   echo "  (no mobile/pubspec.yaml - skipped)"
 fi
 
+echo "== release manifest =="
+# The RELEASE manifest must declare INTERNET on its own: Flutter only puts it in the
+# debug/profile manifests, and the Infortts shell polls the HF CDN for OTA patches at
+# runtime (shared InforttsCdnOtaEngine). Omitting it is silent in tests and only breaks
+# the published APK, so assert it here alongside the other release inputs.
+MAIN_MANIFEST="mobile/android/app/src/main/AndroidManifest.xml"
+if [ -f "$MAIN_MANIFEST" ]; then
+  if grep -q 'android.permission.INTERNET' "$MAIN_MANIFEST"; then
+    echo "  release manifest declares INTERNET"
+  else
+    echo "validate-release.sh: $MAIN_MANIFEST does not declare android.permission.INTERNET — the release APK would lose all OTA/network functionality." >&2
+    exit 1
+  fi
+else
+  echo "  (no main AndroidManifest.xml - skipped)"
+fi
+
 echo "== Flutter app =="
 if command -v flutter >/dev/null 2>&1; then
   echo "  pub get..."
