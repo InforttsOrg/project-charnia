@@ -339,13 +339,17 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
         printf '  %s\n' $LEAKED >&2
         exit 1
     fi
-    CACHES="$(printf '%s\n' "$TRACKED" | grep -E '(^|/)(\.gradle|\.dart_tool|build)/|\.iml$' || true)"
+    # GeneratedPluginRegistrant.java is rewritten by the Flutter tool on every build
+    # and is listed in mobile/android/.gitignore; a stale, committed copy (it once
+    # arrived alongside the leaked key.properties) can silently desync the plugin
+    # registry, so treat it like the other generated artefacts.
+    CACHES="$(printf '%s\n' "$TRACKED" | grep -E '(^|/)(\.gradle|\.dart_tool|build)/|\.iml$|GeneratedPluginRegistrant\.java$' || true)"
     if [ -n "$CACHES" ]; then
-        echo "validate-release.sh: build caches are tracked:" >&2
+        echo "validate-release.sh: generated build caches/artifacts are tracked:" >&2
         printf '  %s\n' $CACHES >&2
         exit 1
     fi
-    echo "  no tracked credential files or build caches"
+    echo "  no tracked credential files or generated build caches"
 else
     echo "  (not a git checkout - skipped)"
 fi
