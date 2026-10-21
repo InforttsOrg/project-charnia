@@ -72,6 +72,9 @@ stage('Flutter: charnia') {
             exit 0
           fi
           cd "$TARGET_DIR"
+          if [ -d "android" ] && [ ! -f "android/key.properties" ] && [ -f "/Users/admin/.android/infortts-release.jks" ]; then
+            printf 'storePassword=infortts2026\nkeyPassword=infortts2026\nkeyAlias=infortts\nstoreFile=/Users/admin/.android/infortts-release.jks\n' > android/key.properties
+          fi
           flutter pub get || true
           flutter analyze --no-fatal-infos --no-fatal-warnings || true
           flutter test || true
@@ -95,11 +98,59 @@ stage('Flutter: charnia') {
               VER_ARGS="--android-skip-build-dependency-validation"
               [ -n "$BASE_VER" ] && VER_ARGS="$VER_ARGS --build-name=$BASE_VER"
               [ -n "$BUILD_NUM" ] && VER_ARGS="$VER_ARGS --build-number=$BUILD_NUM"
-              flutter build apk --release $VER_ARGS || echo "APK build attempted"
-              if [ "$PLAN_ACTION" = "playstore" ]; then
-                flutter build appbundle --release $VER_ARGS || echo "AppBundle build attempted"
+
+              export PATH="$HOME/.shorebird/bin:$PATH"
+              export SHOREBIRD_HOSTED_URL="https://shorebird.infortts.site"
+              export AUTH_SERVICE_URL="https://shorebird.infortts.site/auth"
+              export SHOREBIRD_TOKEN=$(cat ~/.infortts/shorebird_token 2>/dev/null || true)
+
+              if command -v shorebird >/dev/null 2>&1 && [ -f "shorebird.yaml" ]; then
+                echo "⚡ Shorebird detected for charnia — executing self-hosted CodePush ($PLAN_ACTION)..."
+                if [ "$PLAN_ACTION" = "playstore" ]; then
+                  shorebird release android --no-confirm --artifact=apk $VER_ARGS || {
+                    echo "Shorebird release fallback to standard build"
+                    flutter build apk --release $VER_ARGS || true
+                    flutter build appbundle --release $VER_ARGS || true
+                  }
+                else
+                  shorebird patch android --no-confirm $VER_ARGS || echo "Shorebird patch fallback"
+                  flutter build apk --release $VER_ARGS || true
+                fi
+              else
+                flutter build apk --release $VER_ARGS || echo "APK build attempted"
+                if [ "$PLAN_ACTION" = "playstore" ]; then
+                  flutter build appbundle --release $VER_ARGS || echo "AppBundle build attempted"
+                fi
+              fi
+              if [ -d "web" ]; then
+                echo "Building Flutter Web release bundle..."
+                flutter build web --release --pwa-strategy=none || echo "Flutter web build attempted"
               fi
             '''
+          }
+        }
+        script {
+          try {
+            withCredentials([[$class: 'StringBinding', credentialsId: 'cloudflare-api-token', variable: 'CF_API_TOKEN']]) {
+              withEnv(["CLOUDFLARE_API_TOKEN=${CF_API_TOKEN}", "CLOUDFLARE_ACCOUNT_ID=04e1a3c2b99919914aba485175906033"]) {
+                sh '''
+                  TARGET_DIR="${APP_DIR:-.}"
+                  if [ ! -f "$TARGET_DIR/pubspec.yaml" ]; then
+                    TARGET_DIR=$(find . -maxdepth 4 -name pubspec.yaml -not -path '*/.*' -not -path '*/build/*' 2>/dev/null | while IFS= read -r f; do d="${f%/pubspec.yaml}"; if [ -f "$d/lib/main.dart" ] || [ -d "$d/android" ]; then echo "$d"; break; fi; done)
+                  fi
+                  if [ -d "$TARGET_DIR/build/web" ]; then
+                    PAGES_NAME="project-app-charnia"
+                    [ "charnia" = "admin" ] && PAGES_NAME="infortts-admin"
+                    [ "charnia" = "mitochondria" ] && PAGES_NAME="mitochondria"
+                    [ "charnia" = "waptia" ] && PAGES_NAME="waptia-store"
+                    echo "Deploying Flutter Web to Cloudflare Pages: $PAGES_NAME"
+                    npx -y wrangler pages deploy "$TARGET_DIR/build/web" --project-name="$PAGES_NAME" --branch=main --commit-dirty=true 2>&1 | tail -20 || echo "⚠️ Cloudflare pages deploy advisory (non-fatal)"
+                  fi
+                '''
+              }
+            }
+          } catch (Exception e) {
+            echo "Cloudflare Pages step notice: ${e.message}"
           }
         }
         script {

@@ -233,16 +233,23 @@ void publishHuggingFace(Map opts = [:]) {
   def track     = opts.track ?: 'internal'
   def repo      = opts.repo ?: 'rttss/ota-patches'
 
+  def hasApk = (apkPath && fileExists(apkPath))
+  def hasPatch = (patchPath && fileExists(patchPath))
+  if (!hasApk && !hasPatch) {
+    echo "[HF CDN] Skipping publish for ${slug}: neither APK nor patch artifact found on disk"
+    return
+  }
+
   echo "[HF CDN] Publishing ${slug} to Hugging Face dataset ${repo}..."
   
   // Find upload script in ci/ or shared/
   def scriptPath = fileExists('ci/upload_to_hf.py') ? 'ci/upload_to_hf.py' : (fileExists('upload_to_hf.py') ? 'upload_to_hf.py' : '/srv/infortts-jenkins/shared/upload_to_hf.py')
   
   def cmd = "python3 ${scriptPath} --slug '${slug}' --version '${version}' --track '${track}' --repo '${repo}'"
-  if (apkPath && fileExists(apkPath)) {
+  if (hasApk) {
     cmd += " --apk '${apkPath}'"
   }
-  if (patchPath && fileExists(patchPath)) {
+  if (hasPatch) {
     cmd += " --patch '${patchPath}'"
   }
   

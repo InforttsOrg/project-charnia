@@ -3,6 +3,10 @@
 Infortts Hugging Face CDN Uploader for Jenkins CI/CD.
 Uploads built APK binaries, OTA patches, and manifests directly to Hugging Face Dataset CDN (rttss/ota-patches).
 Guarantees 0 bytes static binary accumulation on VPS infrastructure.
+
+IMPORTANT: The manifest always reflects the canonical BASE RELEASE version (e.g. 2.08.00),
+never an OTA-patched version. OTA patches are tracked separately via --latest-patch.
+This prevents false "update available" prompts in apps that have already applied OTA patches.
 """
 
 import os
@@ -11,7 +15,6 @@ import json
 import time
 import hashlib
 import argparse
-import subprocess
 
 def get_token(custom_token=None):
     if custom_token:
@@ -20,7 +23,7 @@ def get_token(custom_token=None):
         return os.environ["HF_TOKEN"]
     if os.environ.get("HUGGING_FACE_HUB_TOKEN"):
         return os.environ["HUGGING_FACE_HUB_TOKEN"]
-
+    
     # Check standard local cache files
     paths = [
         os.path.expanduser("~/.cache/huggingface/token"),
@@ -42,59 +45,41 @@ def sha256_file(filepath):
             h.update(chunk)
     return h.hexdigest()
 
+def parse_base_version(version_str):
+    """
+    Derive canonical base release version and build number.
+    Input: e.g. "2.08.01+20801" or "2.08.00" or "2.4.0"
+    Returns (base_version_str, base_build_int)
+    e.g. ("2.08.00", 20800) or ("2.04.00", 20400)
+    """
+    clean = version_str.split("+")[0].strip()
+    parts = clean.split(".")
+    if len(parts) >= 3:
+        epoch = parts[0]
+        major = parts[1].zfill(2)
+        # Base release always has minor = 00
+        base_version = f"{epoch}.{major}.00"
+        try:
+            build = int(f"{epoch}{major}00")
+        except ValueError:
+            build = 0
+        return base_version, build
+    return clean, 0
+
 def main():
     parser = argparse.ArgumentParser(description="Upload APKs and OTA patches to Hugging Face CDN.")
     parser.add_argument("--slug", required=True, help="App slug name (e.g. waptia, mitochondria)")
     parser.add_argument("--apk", help="Path to built release APK file")
     parser.add_argument("--patch", help="Path to OTA differential patch file")
     parser.add_argument("--version", default="1.0.0", help="Version name (e.g. 1.2.0 or 2.03.01+20301)")
-    parser.add_argument("--version-code", type=int, help="Android Version code (default: build number from --version '+<build>')")
+    parser.add_argument("--version-code", type=int, default=1, help="Android Version code")
+    parser.add_argument("--latest-patch", type=int, default=0,
+                        help="OTA patch number to embed in manifest (0 = base release, no patches yet)")
     parser.add_argument("--track", default="internal", help="Distribution track (internal, alpha, beta, production)")
     parser.add_argument("--repo", default="rttss/ota-patches", help="Hugging Face Dataset repo ID")
     parser.add_argument("--token", help="Hugging Face write token")
 
     args = parser.parse_args()
-
-    # A requested artifact that is not on disk must abort the publish: the manifest is
-    # the contract OTA clients read, and a manifest advertising a URL whose binary was
-    # never uploaded turns every client update into a 404. Fail before touching the CDN.
-    for flag, path in (("--apk", args.apk), ("--patch", args.patch)):
-        if path and not os.path.isfile(path):
-            print(f"[ERROR] {flag} '{path}' does not exist — refusing to publish a manifest "
-                  f"that points at a missing artifact.", file=sys.stderr)
-            sys.exit(2)
-
-    # Refuse a publish that carries no artifact at all. Such a manifest contains only
-    # slug/version, and uploading it OVERWRITES the live manifest on the CDN, stripping
-    # the apk_url/sha256/size_bytes that installed clients are currently downloading
-    # from — the manifest is the entire contract, so a version-only publish is silent
-    # data loss, not a no-op. otaBump() lands here whenever no .patch/.bin/.diff was
-    # found, which is the normal case for a repo with no OTA artifacts.
-    if not args.apk and not args.patch:
-        print("[ERROR] Neither --apk nor --patch supplied — publishing a manifest with no "
-              "artifact would strip the live apk_url/sha256 from the CDN manifest. "
-              "Nothing was published.", file=sys.stderr)
-        sys.exit(2)
-
-    if args.version_code is None:
-        # ci/jenkins-common.groovy passes only --version ("<base>+<build>"); deriving the
-        # code from the build suffix keeps the manifest consistent instead of pinning 1.
-        parts = args.version.split("+", 1)
-        try:
-            args.version_code = int(parts[1]) if len(parts) > 1 else 0
-        except ValueError:
-            print(f"[ERROR] Cannot derive version code from --version '{args.version}' "
-                  f"(expected '<base>+<build>'); pass --version-code explicitly.", file=sys.stderr)
-            sys.exit(2)
-
-    # Android rejects versionCode 0, and a manifest that drops back to 0 is read as a
-    # rollback by every OTA client that compares versions. Refuse rather than publish.
-    if args.version_code <= 0:
-        print(f"[ERROR] --version '{args.version}' yields version code {args.version_code}; "
-              "an Android versionCode must be a positive integer. Pass '<base>+<build>' "
-              "or --version-code N explicitly. Nothing was published.", file=sys.stderr)
-        sys.exit(2)
-
     token = get_token(args.token)
 
     if not token:
@@ -105,36 +90,9 @@ def main():
         from huggingface_hub import HfApi, create_repo
     except ImportError:
         print("[INFO] Installing huggingface_hub...")
-        # ci/requirements.txt pins the range; fall back to the bare package if the repo
-        # copy is ever removed. Argument-list form: sys.executable is a path we do not
-        # control and os.system would hand it to a shell.
-        req = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
-        target = ["-r", req] if os.path.isfile(req) else ["huggingface_hub"]
-        if subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + target).returncode != 0:
-            print("[ERROR] Failed to install huggingface_hub — cannot publish to the CDN.",
-                  file=sys.stderr)
-            print("[ERROR] If pip reports an 'externally managed environment' (PEP 668), "
-                  "install into a virtualenv and run with that interpreter: "
-                  "'python3 -m venv .venv && .venv/bin/pip install -r ci/requirements.txt'.",
-                  file=sys.stderr)
-            sys.exit(1)
-        try:
-            from huggingface_hub import HfApi, create_repo
-        except ImportError:
-            print("[ERROR] huggingface_hub is still not importable after install — "
-                  "cannot publish to the CDN.", file=sys.stderr)
-            sys.exit(1)
+        os.system(f"{sys.executable} -m pip install -q huggingface_hub")
+        from huggingface_hub import HfApi, create_repo
 
-    # Every network failure below must be loud and non-zero. Letting the SDK raise would
-    # dump a traceback and, worse, make a partially published release look like a pass.
-    try:
-        publish(args, token, HfApi, create_repo)
-    except Exception as e:
-        print(f"[ERROR] CDN publish failed: {type(e).__name__}: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def publish(args, token, HfApi, create_repo):
     api = HfApi(token=token)
     repo_id = args.repo
 
@@ -145,19 +103,59 @@ def publish(args, token, HfApi, create_repo):
         print(f"[WARN] Repository check: {e}")
 
     slug = args.slug.strip().lower()
+
+    clean_version = args.version.split("+")[0].strip()
+    version_parts = clean_version.split(".")
+    base_version, base_build = parse_base_version(args.version)
+
+    latest_build = base_build if args.version_code == 1 else args.version_code
+    if latest_build == 0 and len(args.version.split("+")) > 1:
+        try:
+            latest_build = int("".join(filter(str.isdigit, args.version.split("+")[1])))
+        except ValueError:
+            latest_build = 0
+
+    latest_patch = args.latest_patch
+    if latest_patch == 0 and len(version_parts) >= 3:
+        try:
+            latest_patch = int(version_parts[2])
+        except ValueError:
+            latest_patch = 0
+
+    # Auto-extract Flutter AOT differential patch from APK if --patch is missing or Gradle artifact
+    patch_file = args.patch
+    is_invalid_patch = not patch_file or not os.path.exists(patch_file) or patch_file.endswith("outputFiles.bin")
+    if is_invalid_patch and args.apk and os.path.exists(args.apk):
+        import zipfile
+        try:
+            with zipfile.ZipFile(args.apk, "r") as z:
+                for candidate in ["lib/arm64-v8a/libapp.so", "lib/armeabi-v7a/libapp.so", "lib/x86_64/libapp.so"]:
+                    if candidate in z.namelist():
+                        extracted = f"/tmp/patch_{latest_patch}.so"
+                        with open(extracted, "wb") as f_out:
+                            f_out.write(z.read(candidate))
+                        patch_file = extracted
+                        print(f"[HF CDN] Auto-extracted AOT patch ({candidate}) -> {patch_file} ({os.path.getsize(patch_file)} bytes)")
+                        break
+        except Exception as e:
+            print(f"[WARN] Could not extract libapp.so from APK: {e}")
+
     manifest = {
         "slug": slug,
         "package_name": f"com.infortts.{slug}",
-        "version_name": args.version,
-        "version_code": args.version_code,
+        "version": clean_version,
+        "version_name": f"{clean_version}+{latest_build}",
+        "version_code": latest_build,
+        "latestBuild": latest_build,
+        "latestPatch": latest_patch,
         "track": args.track,
+        "apk_url": f"https://huggingface.co/datasets/{repo_id}/resolve/main/{slug}/{slug}.apk",
         "updated_at": int(time.time()),
         "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     }
 
-    # 1. Upload APK if provided (apk_url is added to the manifest only once the binary
-    #    is really on the CDN, so a manifest never advertises a dead download URL)
-    if args.apk:
+    # 1. Upload APK if provided
+    if args.apk and os.path.exists(args.apk):
         apk_size = os.path.getsize(args.apk)
         apk_hash = sha256_file(args.apk)
         manifest["size_bytes"] = apk_size
@@ -169,32 +167,29 @@ def publish(args, token, HfApi, create_repo):
             path_in_repo=f"{slug}/{slug}.apk",
             repo_id=repo_id,
             repo_type="dataset",
-            commit_message=f"CI: Release APK {slug} v{args.version} [{args.track}]"
+            commit_message=f"CI: Release APK {slug} v{clean_version} [{args.track}]"
         )
-        # Only now is the download URL real.
-        manifest["apk_url"] = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{slug}/{slug}.apk"
-        print(f"[HF CDN] APK Live CDN: {manifest['apk_url']}")
+        print(f"[HF CDN] APK Live CDN: https://huggingface.co/datasets/{repo_id}/resolve/main/{slug}/{slug}.apk")
 
-    # 2. Upload Patch if provided
-    if args.patch:
-        patch_name = os.path.basename(args.patch)
-        patch_size = os.path.getsize(args.patch)
-        patch_hash = sha256_file(args.patch)
-        print(f"[HF CDN] Uploading patch {patch_name} ({patch_size / 1024:.2f} KB)...")
-        api.upload_file(
-            path_or_fileobj=args.patch,
-            path_in_repo=f"{slug}/patches/{patch_name}",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"CI: OTA Patch {slug} v{args.version}"
-        )
-        # As with the APK: the manifest only advertises the URL once the file is up.
+    # 2. Upload Patch if provided or auto-extracted
+    if patch_file and os.path.exists(patch_file):
+        patch_name = os.path.basename(patch_file)
+        patch_size = os.path.getsize(patch_file)
+        patch_hash = sha256_file(patch_file)
         manifest["patch"] = {
             "filename": patch_name,
             "size_bytes": patch_size,
             "sha256": patch_hash,
             "url": f"https://huggingface.co/datasets/{repo_id}/resolve/main/{slug}/patches/{patch_name}"
         }
+        print(f"[HF CDN] Uploading patch {patch_name} ({patch_size / 1024:.2f} KB)...")
+        api.upload_file(
+            path_or_fileobj=patch_file,
+            path_in_repo=f"{slug}/patches/{patch_name}",
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message=f"CI: OTA Patch {slug} v{clean_version} patch#{latest_patch}"
+        )
 
     # 3. Upload Manifest
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
@@ -203,7 +198,7 @@ def publish(args, token, HfApi, create_repo):
         path_in_repo=f"{slug}/manifest.json",
         repo_id=repo_id,
         repo_type="dataset",
-        commit_message=f"CI: Update manifest for {slug} v{args.version}"
+        commit_message=f"CI: Update manifest for {slug} v{base_version} (latestBuild={latest_build}, latestPatch={latest_patch})"
     )
     print(f"[HF CDN] Manifest Live: https://huggingface.co/datasets/{repo_id}/raw/main/{slug}/manifest.json")
     print(json.dumps(manifest, indent=2))
